@@ -34,40 +34,61 @@ fi
 
 info "Installing dependencies..."
 apt-get update -qq
-apt-get install -y -qq sane-utils snmp > /dev/null 2>&1
+apt-get install -y -qq ca-certificates sane-utils snmp > /dev/null 2>&1
 
-# Check for brscan4
-if ! command -v brsaneconfig4 &>/dev/null; then
-    warn "brscan4 driver not found."
+# Check for a supported Brother scanner driver
+DRIVER_VERSION="${BRSCAN_VERSION:-}"
+if [[ -n "$DRIVER_VERSION" && "$DRIVER_VERSION" != "4" && "$DRIVER_VERSION" != "5" ]]; then
+    error "BRSCAN_VERSION must be 4 or 5"
+fi
+
+if [[ -z "$DRIVER_VERSION" ]]; then
+    for version in 4 5; do
+        if command -v "brsaneconfig${version}" &>/dev/null; then
+            DRIVER_VERSION="$version"
+            break
+        fi
+    done
+fi
+
+if [[ -z "$DRIVER_VERSION" ]] || ! command -v "brsaneconfig${DRIVER_VERSION}" &>/dev/null; then
+    warn "brscan4/brscan5 driver not found."
     echo ""
-    echo "  Download the 64-bit scanner driver (.deb) for your model from:"
+    echo "  Download the scanner driver (.deb) for your model from:"
     echo "  https://support.brother.com"
     echo ""
     echo "  Then install with:"
-    echo "    dpkg -i --force-all brscan4-*.amd64.deb"
+    echo "    dpkg -i brscan4-*.amd64.deb"
+    echo "  or:"
+    echo "    dpkg -i brscan5-*.amd64.deb"
     echo ""
     echo "  After installing, re-run this installer."
     exit 1
 fi
+info "Found brscan${DRIVER_VERSION}"
 
-# Create sane config dir if missing (common in LXC containers)
-if [[ ! -d /etc/sane.d ]]; then
-    mkdir -p /etc/sane.d
-    echo "brother4" > /etc/sane.d/dll.conf
-    info "Created /etc/sane.d/dll.conf"
-fi
+# Create sane config if missing (common in LXC containers)
+mkdir -p /etc/sane.d
+touch /etc/sane.d/dll.conf
 
-# Ensure brother4 is in dll.conf
-if ! grep -q "brother4" /etc/sane.d/dll.conf 2>/dev/null; then
-    echo "brother4" >> /etc/sane.d/dll.conf
-    info "Added brother4 to /etc/sane.d/dll.conf"
+# Ensure the selected backend is in dll.conf
+if ! grep -qx "brother${DRIVER_VERSION}" /etc/sane.d/dll.conf 2>/dev/null; then
+    echo "brother${DRIVER_VERSION}" >> /etc/sane.d/dll.conf
+    info "Added brother${DRIVER_VERSION} to /etc/sane.d/dll.conf"
 fi
 
 # Install the daemon
 info "Installing daemon to ${INSTALL_DIR}..."
 mkdir -p "$INSTALL_DIR"
-cp src/brother_scan_daemon.py "$INSTALL_DIR/brother_scan_daemon.py"
-chmod +x "$INSTALL_DIR/brother_scan_daemon.py"
+PACKAGE_DIR="$INSTALL_DIR/brother_scan_to_paperless"
+PACKAGE_STAGE="$INSTALL_DIR/.brother_scan_to_paperless.new"
+rm -rf "$PACKAGE_STAGE"
+cp -R src/brother_scan_to_paperless "$PACKAGE_STAGE"
+rm -rf "$PACKAGE_DIR"
+mv "$PACKAGE_STAGE" "$PACKAGE_DIR"
+install -m 0755 \
+    src/brother_scan_daemon.py \
+    "$INSTALL_DIR/brother_scan_daemon.py"
 
 # Create symlink
 ln -sf "$INSTALL_DIR/brother_scan_daemon.py" "$BIN_LINK"
@@ -78,7 +99,7 @@ info "Installing systemd service..."
 cat > "$SERVICE_FILE" << 'EOF'
 [Unit]
 Description=Brother Scan to Paperless-ngx Daemon
-Documentation=https://github.com/vanessa/brother-scan-to-paperless
+Documentation=https://github.com/zshel/brother-scan-to-paperless
 After=network.target
 
 [Service]
@@ -94,8 +115,9 @@ EOF
 systemctl daemon-reload
 info "Systemd service installed"
 
-# Create config dir
-mkdir -p "$CONFIG_DIR"
+# Create private config and staging directories
+install -d -m 0700 "$CONFIG_DIR"
+install -d -m 0700 /var/lib/brother-scan-to-paperless
 
 echo ""
 info "Installation complete!"
@@ -103,7 +125,7 @@ echo ""
 echo "  Next steps:"
 echo ""
 echo "  1. Register your scanner:"
-echo "     brsaneconfig4 -a name=BROTHER model=YOUR_MODEL ip=PRINTER_IP"
+echo "     brsaneconfig${DRIVER_VERSION} -a name=BROTHER model=YOUR_MODEL ip=PRINTER_IP"
 echo ""
 echo "  2. Run the setup wizard:"
 echo "     brother-scan-to-paperless setup"

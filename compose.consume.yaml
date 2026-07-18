@@ -1,0 +1,16 @@
+services:
+  brscan4:
+    volumes:
+      - type: bind
+        source: ${PAPERLESS_CONSUME_DIR:?Set PAPERLESS_CONSUME_DIR in .env}
+        target: /consume
+        bind:
+          create_host_path: false
+
+  brscan5:
+    volumes:
+      - type: bind
+        source: ${PAPERLESS_CONSUME_DIR:?Set PAPERLESS_CONSUME_DIR in .env}
+        target: /consume
+        bind:
+          create_host_path: false

@@ -1,0 +1,9 @@
+.git
+.github
+.idea
+.env
+.coverage
+htmlcov
+__pycache__/
+*.py[cod]
+*.log

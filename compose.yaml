@@ -1,0 +1,53 @@
+name: brother-scan-to-paperless
+
+x-runtime: &runtime
+  platform: linux/amd64
+  network_mode: host
+  restart: unless-stopped
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  environment:
+    DELIVERY_MODE: ${DELIVERY_MODE:-consume}
+    PRINTER_IP: ${PRINTER_IP:?Set PRINTER_IP in .env}
+    HOST_IP: ${HOST_IP:?Set HOST_IP in .env}
+    SCANNER_MODEL: ${SCANNER_MODEL:?Set SCANNER_MODEL in .env}
+    SCANNER_NAME: ${SCANNER_NAME:-BROTHER}
+    CONSUME_DIR: "${PAPERLESS_CONSUME_DIR:+/consume}"
+    STAGING_DIR: /staging
+    PAPERLESS_URL: ${PAPERLESS_URL:-}
+    PAPERLESS_API_TOKEN: ${PAPERLESS_API_TOKEN:-}
+    PAPERLESS_API_TOKEN_FILE: ${PAPERLESS_API_TOKEN_FILE:-}
+    PAPERLESS_API_TIMEOUT: ${PAPERLESS_API_TIMEOUT:-60}
+    PAPERLESS_ALLOW_INSECURE_HTTP: "${PAPERLESS_ALLOW_INSECURE_HTTP:-false}"
+    LISTEN_PORT: ${LISTEN_PORT:-54925}
+    RESOLUTION: ${RESOLUTION:-300}
+    FORMAT: ${FORMAT:-tiff}
+    REGISTER_INTERVAL: ${REGISTER_INTERVAL:-300}
+    SCAN_TIMEOUT: ${SCAN_TIMEOUT:-120}
+    DISPLAY_NAME: ${DISPLAY_NAME:-Paperless}
+    LOG_FILE: ""
+  volumes:
+    - brother-scan-staging:/staging
+
+services:
+  brscan4:
+    <<: *runtime
+    profiles: [brscan4]
+    image: ${BRSCAN4_IMAGE:-ghcr.io/zshel/brother-scan-to-paperless:brscan4}
+    build:
+      context: .
+      target: brscan4
+
+  brscan5:
+    <<: *runtime
+    profiles: [brscan5]
+    image: ${BRSCAN5_IMAGE:-ghcr.io/zshel/brother-scan-to-paperless:brscan5}
+    build:
+      context: .
+      target: brscan5
+
+volumes:
+  brother-scan-staging:
+    name: brother-scan-staging

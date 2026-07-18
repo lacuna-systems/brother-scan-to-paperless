@@ -1,0 +1,8 @@
+[run]
+branch = True
+source = brother_scan_to_paperless
+
+[report]
+fail_under = 80
+precision = 1
+show_missing = True

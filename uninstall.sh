@@ -8,6 +8,7 @@ BIN_LINK="/usr/local/bin/brother-scan-to-paperless"
 SERVICE_FILE="/etc/systemd/system/brother-scan-to-paperless.service"
 CONFIG_DIR="/etc/brother-scan-to-paperless"
 LOG_FILE="/var/log/brother-scan-to-paperless.log"
+STAGING_DIR="/var/lib/brother-scan-to-paperless"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -45,4 +46,7 @@ if [[ -d "$CONFIG_DIR" ]]; then
 fi
 if [[ -f "$LOG_FILE" ]]; then
     warn "Log preserved at $LOG_FILE (remove manually if desired)"
+fi
+if [[ -d "$STAGING_DIR" ]]; then
+    warn "API staging files preserved at $STAGING_DIR (review before removal)"
 fi
