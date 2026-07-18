@@ -1,6 +1,5 @@
 """Shared test helpers and source-path bootstrap."""
 
-import os
 import sys
 from pathlib import Path
 
@@ -44,9 +43,3 @@ def expected_scan_path(output_dir):
 
 def expected_partial_path(output_dir):
     return Path(f"{expected_scan_path(output_dir)}.partial")
-
-
-def write_api_scan(command, options, payload):
-    if any(argument.startswith("--output-file=") for argument in command):
-        raise AssertionError("API scans must stream to the secure descriptor")
-    os.write(options["stdout"], payload)

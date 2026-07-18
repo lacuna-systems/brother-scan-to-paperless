@@ -1,16 +1,12 @@
 services:
   brscan4:
+    cap_add:
+      - DAC_OVERRIDE
     volumes:
-      - type: bind
-        source: ${PAPERLESS_CONSUME_DIR:?Set PAPERLESS_CONSUME_DIR in .env}
-        target: /consume
-        bind:
-          create_host_path: false
+      - "${PAPERLESS_CONSUME_DIR:?Set PAPERLESS_CONSUME_DIR in .env}:/consume:z"
 
   brscan5:
+    cap_add:
+      - DAC_OVERRIDE
     volumes:
-      - type: bind
-        source: ${PAPERLESS_CONSUME_DIR:?Set PAPERLESS_CONSUME_DIR in .env}
-        target: /consume
-        bind:
-          create_host_path: false
+      - "${PAPERLESS_CONSUME_DIR:?Set PAPERLESS_CONSUME_DIR in .env}:/consume:z"

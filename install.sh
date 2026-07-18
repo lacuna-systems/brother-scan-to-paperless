@@ -34,7 +34,8 @@ fi
 
 info "Installing dependencies..."
 apt-get update -qq
-apt-get install -y -qq ca-certificates sane-utils snmp > /dev/null 2>&1
+apt-get install -y -qq \
+    ca-certificates libtiff-tools sane-utils snmp > /dev/null 2>&1
 
 # Check for a supported Brother scanner driver
 DRIVER_VERSION="${BRSCAN_VERSION:-}"

@@ -39,7 +39,7 @@ RUN if [ "${TARGETARCH}" != "amd64" ]; then \
     fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates sane-utils snmp tini \
+        ca-certificates libtiff-tools sane-utils snmp tini \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /consume \
     && install -d -m 0700 /staging
@@ -50,13 +50,13 @@ ENV CONSUME_DIR= \
     PAPERLESS_ALLOW_INSECURE_HTTP=false \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    AUTO_REGISTER_SCANNER=true \
     STAGING_DIR=/staging
 
 WORKDIR /app
 
 COPY src/brother_scan_to_paperless/ /opt/brother-scan-to-paperless/brother_scan_to_paperless/
 COPY --chmod=755 src/brother_scan_daemon.py /opt/brother-scan-to-paperless/brother_scan_daemon.py
-COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/brother-scan-to-paperless/
 
 RUN ln -s /opt/brother-scan-to-paperless/brother_scan_daemon.py \
@@ -66,7 +66,7 @@ EXPOSE 54925/udp
 
 STOPSIGNAL SIGTERM
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/brother-scan-to-paperless"]
 CMD ["run"]
 
 

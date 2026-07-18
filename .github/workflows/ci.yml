@@ -42,9 +42,6 @@ jobs:
       - name: Check uninstall script syntax
         run: bash -n uninstall.sh
 
-      - name: Check container entrypoint syntax
-        run: sh -n docker-entrypoint.sh
-
       - name: Validate Compose configuration
         run: |
           docker compose \
@@ -74,11 +71,14 @@ jobs:
               assert consume["services"][service]["environment"]["CONSUME_DIR"] == "/consume"
               assert api["services"][service]["environment"]["CONSUME_DIR"] == ""
               assert api["services"][service]["environment"]["PAPERLESS_ALLOW_INSECURE_HTTP"] == "false"
+              assert "DAC_OVERRIDE" in consume["services"][service]["cap_add"]
+              assert "cap_add" not in api["services"][service]
               consume_mounts = consume["services"][service]["volumes"]
               assert any(
                   mount["target"] == "/consume"
                   and mount["type"] == "bind"
-                  and mount["bind"]["create_host_path"] is False
+                  and mount["bind"].get("selinux") == "z"
+                  and mount["bind"].get("create_host_path", True) is True
                   for mount in consume_mounts
               )
               assert all(
@@ -133,41 +133,44 @@ jobs:
             --env SCANNER_MODEL \
             --entrypoint sh \
             "$IMAGE" -ec '
-            test "$BRSCAN_VERSION" = "$EXPECTED_DRIVER"
-            test "$SCANNER_DEVICE" = "brother${EXPECTED_DRIVER}:net1;dev0"
             command -v scanimage
+            command -v snmpget
             command -v snmpset
-            command -v "brsaneconfig${BRSCAN_VERSION}"
+            command -v tiffcp
+            command -v tiff2pdf
             test -s /etc/ssl/certs/ca-certificates.crt
             test "$(stat -c %a /staging)" = 700
+
+            test "$BRSCAN_VERSION" = "$EXPECTED_DRIVER"
+            test "$SCANNER_DEVICE" = "brother${EXPECTED_DRIVER}:net1;dev0"
+            command -v "brsaneconfig${BRSCAN_VERSION}"
             grep -x "brother${BRSCAN_VERSION}" /etc/sane.d/dll.conf
             "brsaneconfig${BRSCAN_VERSION}" -a \
               name=SMOKE model="${SCANNER_MODEL}" ip=192.0.2.10
             scanimage -L | grep "$SCANNER_DEVICE"
           '
 
-          docker run --rm \
-            --env PRINTER_IP=192.0.2.10 \
-            --env SCANNER_MODEL="$SCANNER_MODEL" \
-            "$IMAGE" run --help \
-            | grep "Registered ${SCANNER_MODEL} at 192.0.2.10 with brsaneconfig${EXPECTED_DRIVER}"
-
-          if output=$(docker run --rm \
+          exit_code=0
+          output=$(timeout 15s docker run --rm \
             --env PRINTER_IP=192.0.2.10 \
             --env HOST_IP=192.0.2.20 \
-            --env SCANNER_MODEL=TOTALLY_INVALID_MODEL \
             --env CONSUME_DIR=/tmp \
-            "$IMAGE" run --help 2>&1); then
-            echo "Invalid scanner model unexpectedly started" >&2
+            "$IMAGE" run 2>&1) || exit_code=$?
+          if [ "$exit_code" -eq 0 ]; then
+            echo "Invalid scanner configuration unexpectedly started" >&2
             exit 1
           fi
-          printf '%s\n' "$output" | grep \
-            "TOTALLY_INVALID_MODEL is not supported by brscan${EXPECTED_DRIVER}"
+          if [ "$exit_code" -eq 124 ]; then
+            echo "Invalid scanner configuration test timed out" >&2
+            exit 1
+          fi
+          printf '%s\n' "$output" | grep "SCANNER_MODEL is required"
 
           if output=$(docker run --rm \
             --env SKIP_SCANNER_REGISTRATION=true \
             --env PRINTER_IP=192.0.2.10 \
             --env HOST_IP=192.0.2.20 \
+            --env SCANNER_MODEL \
             "$IMAGE" run 2>&1); then
             echo "Consume mode unexpectedly started without a mount" >&2
             exit 1
@@ -177,6 +180,8 @@ jobs:
       - name: Smoke test API delivery in ${{ matrix.target }} image
         env:
           IMAGE: brother-scan-to-paperless:${{ matrix.target }}
+          EXPECTED_DRIVER: ${{ matrix.version }}
+          SCANNER_MODEL: ${{ matrix.model }}
         run: |
           rm -f /tmp/mock-paperless-ready
           python - <<'PY' &
@@ -212,17 +217,20 @@ jobs:
             sleep 0.1
           done
 
-          docker run --rm --network host \
-            --env SKIP_SCANNER_REGISTRATION=true \
+          output=$(docker run --rm --network host \
             --env DELIVERY_MODE=api \
             --env PRINTER_IP=192.0.2.10 \
             --env HOST_IP=192.0.2.20 \
+            --env SCANNER_MODEL="$SCANNER_MODEL" \
             --env PAPERLESS_URL=http://127.0.0.1:18081/prefix \
             --env PAPERLESS_API_TOKEN=container-secret \
             --env PAPERLESS_ALLOW_INSECURE_HTTP=true \
             --mount \
               "type=bind,source=${PWD}/tests/fake_scanimage.sh,target=/usr/local/bin/scanimage,readonly" \
-            "$IMAGE" test
+            "$IMAGE" test 2>&1)
+          printf '%s\n' "$output" | grep \
+            "Registered ${SCANNER_MODEL} at 192.0.2.10 with brsaneconfig${EXPECTED_DRIVER}"
+          printf '%s\n' "$output" | grep "Test scan succeeded!"
           wait "$server_pid"
           trap - EXIT
 

@@ -7,7 +7,12 @@ import sys
 from urllib.parse import urlsplit
 
 from . import __version__
-from .brother import default_driver_version, detect_host_ip
+from .brother import (
+    ScannerConfigurationError,
+    configure_sane_scanner,
+    default_driver_version,
+    detect_host_ip,
+)
 from .config import (
     DEFAULT_CONFIG,
     check_dependencies,
@@ -15,8 +20,29 @@ from .config import (
     validate_config,
     write_config,
 )
-from .daemon import run_daemon
+from .daemon import ScanListenerError, run_daemon
 from .scanner import do_scan
+
+
+def configure_container_scanner(config: dict) -> None:
+    """Register the container's Brother SANE scanner before scanning."""
+    if os.environ.get("AUTO_REGISTER_SCANNER") != "true":
+        return
+    if os.environ.get("SKIP_SCANNER_REGISTRATION", "false") == "true":
+        return
+
+    scanner_model = os.environ.get("SCANNER_MODEL")
+    if not scanner_model:
+        raise ScannerConfigurationError("SCANNER_MODEL is required")
+    scanner_name = os.environ.get("SCANNER_NAME") or "BROTHER"
+    verified = configure_sane_scanner(
+        config["driver_version"],
+        scanner_name,
+        scanner_model,
+        config["printer_ip"],
+    )
+    if not verified:
+        print("Continuing without a verified Brother SANE registration")
 
 
 def cmd_setup(args: argparse.Namespace) -> None:
@@ -125,8 +151,10 @@ def cmd_test(args: argparse.Namespace) -> None:
             print(f"  - {error}")
         sys.exit(1)
 
+    configure_container_scanner(config)
+
     print("Testing scan...")
-    success = do_scan(config)
+    success = do_scan(config, page_limit=1)
     if success:
         print("Test scan succeeded!")
     else:
@@ -152,7 +180,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     missing = check_dependencies(config)
     if missing:
         print(f"Missing dependencies: {', '.join(missing)}")
-        print("Install with: apt install sane-utils snmp")
+        print("Install with: apt install sane-utils snmp libtiff-tools")
         driver_command = f"brsaneconfig{config['driver_version']}"
         if driver_command in missing:
             print(
@@ -169,6 +197,8 @@ def cmd_run(args: argparse.Namespace) -> None:
             print(f"  - {error}")
         print("\nRun 'brother-scan-to-paperless setup' to configure.")
         sys.exit(1)
+
+    configure_container_scanner(config)
 
     run_daemon(config)
 
@@ -217,3 +247,6 @@ def main() -> None:
     except ValueError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         sys.exit(2)
+    except (ScannerConfigurationError, ScanListenerError) as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)

@@ -71,6 +71,25 @@ class ConfigValidationTests(unittest.TestCase):
 
         self.assertEqual(errors, ["consume_dir does not exist: /does-not-exist"])
 
+    def test_validate_config_rejects_unwritable_consume_directory(self):
+        with (
+            tempfile.TemporaryDirectory() as consume_dir,
+            mock.patch.object(config_module.os, "access", return_value=False),
+        ):
+            errors = config_module.validate_config(
+                {
+                    "driver_version": "4",
+                    "printer_ip": "192.0.2.10",
+                    "host_ip": "192.0.2.20",
+                    "consume_dir": consume_dir,
+                }
+            )
+
+        self.assertEqual(
+            errors,
+            [f"consume_dir is not writable: {consume_dir}"],
+        )
+
     def test_validate_config_accepts_api_mode_without_consume_directory(self):
         with tempfile.TemporaryDirectory() as staging_dir:
             config = {

@@ -135,7 +135,6 @@ def validate_config(config: dict) -> list[str]:
     """Validate config and return list of error messages."""
     errors = []
     delivery_mode = config.get("delivery_mode", "consume")
-
     if config.get("driver_version") not in ("4", "5"):
         errors.append("driver_version must be 4 or 5")
     if delivery_mode not in ("consume", "api"):
@@ -221,7 +220,18 @@ def check_dependencies(config: dict) -> list[str]:
     """Check that required commands are available."""
     missing = []
     driver_version = config.get("driver_version", "4")
-    for cmd in ["scanimage", "snmpset", f"brsaneconfig{driver_version}"]:
+    commands = [
+        "scanimage",
+        "snmpget",
+        "snmpset",
+        f"brsaneconfig{driver_version}",
+    ]
+    output_format = config.get("format", "tiff").lower()
+    if output_format in ("pdf", "tiff"):
+        commands.append("tiffcp")
+    if output_format == "pdf":
+        commands.append("tiff2pdf")
+    for cmd in commands:
         if shutil.which(cmd) is None:
             missing.append(cmd)
     return missing

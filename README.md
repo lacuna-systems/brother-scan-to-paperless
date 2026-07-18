@@ -15,13 +15,15 @@ Brother provides `brscan-skey` as its official Linux scan-button tool, but it
 can be unreliable in headless and containerized environments. This daemon
 replaces the scan-key process with a small Python service that:
 
-- registers scan profiles on the printer over SNMP;
+- automatically registers scan profiles over Phoenix HTTPS on newer printers
+  or SNMP on older printers;
 - listens for button events on UDP port `54925`;
-- uses `scanimage` to pull the document from the scanner; and
+- uses `scanimage` batch mode to pull every page in the scanner's current job;
+  and
 - either writes the result into Paperless-ngx's consume directory or uploads
   it through the Paperless API.
 
-## Choose a driver
+## Choose a scanner backend
 
 Brother models use either `brscan4` or `brscan5`. `brscan5` is not an upgrade
 for `brscan4` models. Find your model on
@@ -30,27 +32,27 @@ generation listed on its Linux download page.
 
 This repository builds two image targets:
 
-| Published image | Brother backend | SANE device |
+| Published image | SANE backend | Device configuration |
 |---|---|---|
 | `ghcr.io/zshel/brother-scan-to-paperless:brscan4` | `brscan4` 0.4.11-1 | `brother4:net1;dev0` |
 | `ghcr.io/zshel/brother-scan-to-paperless:brscan5` | `brscan5` 1.7.0-0 | `brother5:net1;dev0` |
 
-Brother currently publishes these Debian packages for x86 only. The Docker
-targets intentionally support `linux/amd64` and fail early on other
-architectures.
+Brother currently publishes its Debian packages for x86 only. All Docker
+images published by this project are built for `linux/amd64`.
 
 ## Docker
 
 Docker is the recommended installation method. The images include Python,
-SANE, SNMP tools, this daemon, and the selected Brother driver. They are for
-static-IP network scanners; USB scanners are not supported by this container
-setup.
+SANE, SNMP and TIFF tools, this daemon, and the selected scanner backend. They
+are for static-IP network scanners; USB scanners are not supported by this
+container setup.
 
 ### Requirements
 
 - Linux with Docker Engine and Docker Compose
 - an `amd64` host, or an environment able to run `linux/amd64` images
-- a Brother network scanner with a static or reserved IP address
+- a Brother network scanner with a static or reserved IP address and a
+  compatible `brscan4` or `brscan5` backend
 - the Docker host's LAN IP address, reachable from the printer
 - either a writable Paperless consume directory or a Paperless URL and API
   token
@@ -68,10 +70,10 @@ docker pull ghcr.io/zshel/brother-scan-to-paperless:brscan5
 
 A Git tag such as `v1.2.3` also publishes `brscan4-1.2.3`, `brscan4-1.2`,
 `brscan5-1.2.3`, and `brscan5-1.2`. Every published build also receives a
-driver-specific `brscanN-sha-<commit>` tag. There is no unqualified `latest`
-tag because the two Brother backends are not interchangeable. For a
-reproducible deployment, set `BRSCAN4_IMAGE` or `BRSCAN5_IMAGE` in `.env` to a
-full versioned tag or image digest.
+backend-specific `brscanN-sha-<commit>` tag. There is no unqualified `latest`
+tag because the Brother backends are not interchangeable. For a reproducible
+deployment, set `BRSCAN4_IMAGE` or `BRSCAN5_IMAGE` in `.env` to a full
+versioned tag or image digest.
 
 The first workflow publication creates a private GHCR package by default for a
 personal account. The repository owner must change the
@@ -101,10 +103,13 @@ to public once to allow anonymous pulls. Until then, authenticate with
    `SCANNER_MODEL` must exactly match the model name accepted by Brother's
    driver. `HOST_IP` is the LAN address the printer can use to reach this
    machine, not a Docker bridge address. Keep `.env` readable only by its owner
-   because API mode can store a Paperless token there. The consume directory
-   must already exist; Compose deliberately refuses to create a mistyped path.
+   because API mode can store a Paperless token there. Create the consume
+   directory before starting Compose so Docker does not create it as `root`.
+   The Compose override applies the shared SELinux `z` label and grants only
+   `DAC_OVERRIDE`, allowing the scanner container to write a directory owned by
+   the Paperless user while all other Linux capabilities remain dropped.
 
-3. Pull and start exactly one driver profile:
+3. Pull and start exactly one backend profile:
 
    ```bash
    # For a brscan4 model
@@ -125,10 +130,10 @@ to public once to allow anonymous pulls. Until then, authenticate with
    docker compose --profile brscan4 logs --follow
    ```
 
-The entrypoint removes and re-adds the scanner's SANE network registration on
-every start, then launches the daemon in the foreground. In consume mode,
-scans are written to the bind-mounted `/consume` directory. Startup fails if
-`PAPERLESS_CONSUME_DIR` is empty, which prevents scans from being left in an
+The Python command removes and re-adds the Brother SANE network registration
+when `run` or `test` starts, then launches the requested operation. In consume
+mode, scans are written to the bind-mounted `/consume` directory. Startup fails
+if `PAPERLESS_CONSUME_DIR` is empty, which prevents scans from being left in an
 unshared container volume by mistake.
 
 Stop the selected profile with:
@@ -156,7 +161,7 @@ PAPERLESS_API_TIMEOUT=60
 
 `PAPERLESS_URL` is the Paperless base URL, including any reverse-proxy path,
 but not `/api`. The token user needs the `documents.add_document` permission.
-Start the selected driver profile with the same Compose commands shown above.
+Start the selected backend profile with the same Compose commands shown above.
 HTTPS is required by default. For an isolated development network only, an
 `http://` URL also requires `PAPERLESS_ALLOW_INSECURE_HTTP=true`; this exposes
 both the token and document contents in plaintext.
@@ -186,7 +191,7 @@ setting `PAPERLESS_API_TOKEN`. A token file takes precedence when both are
 configured. Mount that file separately into the container; a host path is not
 made available merely by putting it in `.env`.
 
-### Build both images locally
+### Build the images locally
 
 ```bash
 docker build --platform linux/amd64 --target brscan4 \
@@ -196,8 +201,8 @@ docker build --platform linux/amd64 --target brscan5 \
   --tag brother-scan-to-paperless:brscan5 .
 ```
 
-The Dockerfile downloads the pinned official Brother packages and verifies
-their SHA-256 checksums before installing them.
+The targets download the pinned official Brother packages and verify their
+SHA-256 checksums before installing them.
 
 ### Run without Compose
 
@@ -209,6 +214,7 @@ docker run --detach \
   --restart unless-stopped \
   --network host \
   --cap-drop ALL \
+  --cap-add DAC_OVERRIDE \
   --security-opt no-new-privileges:true \
   --env PRINTER_IP=192.168.1.50 \
   --env HOST_IP=192.168.1.10 \
@@ -259,22 +265,26 @@ Allow these flows through the host and network firewall:
 | Direction | Protocol/port | Purpose |
 |---|---|---|
 | Printer to Docker host | UDP `54925` | scan-button event |
-| Container to printer | UDP `161` | SNMP profile registration |
-| Container to printer | TCP `54921`, `5566` | scan data requested by `scanimage` |
+| Container to printer | UDP `161` | capability detection and legacy SNMP profile registration |
+| Container to printer | TCP `443` | Phoenix HTTPS profile registration on newer printers |
+| `brscan4`/`brscan5` to printer | TCP `54921`, `5566` | scan data requested by `scanimage` |
 | Container to Paperless | configured HTTP(S) TCP port | document upload in API mode |
 
-The static-IP workflow does not require systemd, D-Bus, an Avahi daemon, udev,
-or privileged container access.
+The containers do not require systemd, D-Bus, udev, or privileged access.
+Button-profile registration automatically uses Phoenix HTTPS when the printer
+advertises it and otherwise uses legacy SNMP. This registration and the UDP
+button-event path are independent of the selected Brother backend.
 
 ## Native installation
 
 The original systemd installation remains available for Debian-based hosts.
+
 Install SANE first so Brother's package can link its backend into the correct
 directory, then install the correct Brother driver for your model:
 
 ```bash
 sudo apt-get update
-sudo apt-get install ca-certificates sane-utils snmp
+sudo apt-get install ca-certificates libtiff-tools sane-utils snmp
 ```
 
 After installing the Brother `.deb`, run:
@@ -285,10 +295,10 @@ cd brother-scan-to-paperless
 sudo bash install.sh
 ```
 
-The installer adds the CA certificate bundle, `sane-utils`, and `snmp`, installs
-the daemon under `/opt`, creates its staging directory, and creates a systemd
-service. It expects either `brsaneconfig4` or `brsaneconfig5` to already be
-installed.
+The installer adds the CA certificate bundle, `sane-utils`, `snmp`, and
+`libtiff-tools`, installs the daemon under `/opt`, creates its staging directory,
+and creates a systemd service. It expects either `brsaneconfig4` or
+`brsaneconfig5` to already be installed.
 
 Register the network scanner with the matching tool:
 
@@ -316,13 +326,22 @@ configuration can contain a token.
 
 ## Usage
 
-Once the daemon is running, use the printer's display:
+Use the printer's display to start a scan:
 
 1. Press **Scan**.
 2. Select **Scan to PC** and the configured display name, such as `Paperless`.
-3. Select **File**. Other registered scan buttons also trigger the same scan.
-4. The daemon writes the document to the consume directory or submits it to
-   the API, depending on `DELIVERY_MODE`.
+3. Select **File**.
+4. Complete the document using the scanner's own workflow. Load all pages in
+   the automatic document feeder before starting, or use the scanner's
+   **Next Page** option when scanning successive pages from the flatbed. Finish
+   the job on the scanner after the last page.
+5. The daemon retrieves the complete job as one SANE batch and writes it to the
+   consume directory or submits it to the API, depending on `DELIVERY_MODE`.
+
+A one-page job is delivered normally. With `FORMAT=tiff` or `FORMAT=pdf`, all
+pages in a multi-page job are assembled in scanner order and delivered as one
+document. Select **File** only once; the scanner, rather than repeated button
+events, controls when another page belongs to the current document.
 
 ## Configuration
 
@@ -344,11 +363,11 @@ override JSON values, and supported command-line flags override both.
 | `paperless_token` | `PAPERLESS_API_TOKEN` | required in API mode |
 | `paperless_api_timeout` | `PAPERLESS_API_TIMEOUT` | `60` seconds |
 | `paperless_allow_insecure_http` | `PAPERLESS_ALLOW_INSECURE_HTTP` | `false` |
-| `scanner_device` | `SCANNER_DEVICE` | derived from driver version |
+| `scanner_device` | `SCANNER_DEVICE` | derived from the driver version |
 | `resolution` | `RESOLUTION` | `300` |
 | `format` | `FORMAT` | `tiff` |
 | `register_interval` | `REGISTER_INTERVAL` | `300` |
-| `scan_timeout` | `SCAN_TIMEOUT` | `120` |
+| `scan_timeout` | `SCAN_TIMEOUT` | `120` seconds for the complete scan job |
 | `display_name` | `DISPLAY_NAME` | `Paperless` |
 | `log_file` | `LOG_FILE` | host log path; empty in Docker |
 | `source` | `SOURCE` | reserved; currently not applied |
@@ -357,12 +376,14 @@ override JSON values, and supported command-line flags override both.
 `PAPERLESS_API_TOKEN_FILE` is an environment-only alternative to
 `PAPERLESS_API_TOKEN`; the file must contain only the token.
 
-Docker also requires these entrypoint variables:
+Docker also uses these scanner-registration variables:
 
 | Variable | Description | Default |
 |---|---|---|
-| `SCANNER_MODEL` | exact Brother model used by `brsaneconfig4/5` | required |
-| `SCANNER_NAME` | internal SANE registration name | `BROTHER` |
+| `SCANNER_MODEL` | exact model used by `brsaneconfig4/5` | required |
+| `SCANNER_NAME` | internal Brother registration name | `BROTHER` |
+| `AUTO_REGISTER_SCANNER` | replace and verify a proprietary Brother registration on `run` and `test` | `true` |
+| `SKIP_SCANNER_REGISTRATION` | disable proprietary Brother registration when set to `true` | `false` |
 
 ## Troubleshooting
 
@@ -373,6 +394,9 @@ Docker also requires these entrypoint variables:
   printer.
 - Check the firewall allows printer-to-host UDP `54925`.
 - Do not start the `brscan4` and `brscan5` Compose profiles together.
+- Stop Brother's `brscan-skey` process or service; it also registers scan
+  profiles and listens on UDP `54925`, so it must not run beside this daemon.
+  The daemon refuses to start when another process already owns that port.
 
 ### The scanner is not found
 
@@ -384,14 +408,51 @@ docker compose --profile brscan4 exec brscan4 scanimage -L
 ```
 
 For `brscan5`, replace the profile, service, and command suffix with `5`.
-An invalid `SCANNER_MODEL` or the wrong driver generation prevents startup.
+An invalid `SCANNER_MODEL` or the wrong driver generation produces an
+unverified-registration warning; the daemon continues, but scanning may not be
+available through that Brother device.
+
+### Button-profile registration fails
+
+The one-time net-snmp message
+`Created directory: /var/lib/snmp/cert_indexes` is harmless. It is not a
+registration failure.
+
+An SNMP `noSuchName` or `noAccess` error for the Brother registration OID on a
+newer printer usually means the running application predates Phoenix HTTPS
+registration and is still trying the legacy SNMP write. Update the image or
+application. The current daemon detects Phoenix-capable models automatically;
+allow outbound UDP `161` for detection and TCP `443` for registration.
 
 ### Consume-directory scans are not imported
 
 - Confirm `PAPERLESS_CONSUME_DIR` points to the actual host directory shared
   with Paperless.
 - Confirm the directory exists and is writable by the container.
+- On SELinux systems, recreate the scanner container after changing the mount
+  so Docker applies its shared `container_file_t` label:
+
+  ```bash
+  docker compose --profile brscan4 up --detach --force-recreate
+  ls -Zd /srv/paperless/consume
+  ```
+
 - Check the Paperless task worker logs for import or permission errors.
+
+### Only the first page is imported
+
+Select **File** once, then complete the multi-page job on the scanner. Load the
+entire document in the automatic document feeder before starting, or use the
+scanner's **Next Page** option for each additional flatbed page and finish the
+job only after the last page. Keep `FORMAT` set to `tiff` or `pdf` so the batch
+can be delivered as one document.
+
+The logs report how many pages the SANE batch returned. If the batch contains
+only one page, confirm that the correct Brother backend and model are
+registered, and that the scanner is using its document-feeder or continuation
+workflow rather than ending the job after the first page. Increase
+`SCAN_TIMEOUT` if a long feeder or **Next Page** job needs more than 120 seconds;
+the timeout covers the complete batch.
 
 ### API uploads fail
 
@@ -423,28 +484,38 @@ docker compose --profile brscan4 exec brscan4 \
   brother-scan-to-paperless test
 ```
 
+For `brscan5`, use the corresponding profile and service name.
+
 ## How it works
 
 ```text
 Brother printer
-    |  1. SNMP registration (container -> printer UDP 161)
+    |  1. Profile registration (container -> printer UDP 161 or TCP 443)
     |  2. Button event (printer -> host UDP 54925)
-    |  3. Scan pull (container -> printer TCP 54921/5566)
+    |  3. Scan pull (container -> printer through the selected Brother backend)
     v
 brother-scan-to-paperless
-    |  consume mode: writes TIFF/PNG/PNM to the shared directory
+    |  consume mode: writes TIFF/PDF/PNG/PNM to the shared directory
     |  api mode: stages locally, then POSTs the document
     v
 Paperless-ngx
 ```
 
-On startup and at the configured interval, the daemon registers scan profiles
-with the printer. A button event containing `BUTTON=SCAN` triggers
-`scanimage`. The daemon scans to a `.partial` path and atomically gives the
-completed document its final name. Consume mode leaves that file in
-Paperless's consume directory. API mode streams it to Paperless's documented
-upload endpoint, deleting the staged copy only after a valid HTTP 200 JSON
-acknowledgement.
+On startup and at the configured interval, the daemon queries the printer's
+capabilities and registers scan profiles through Phoenix HTTPS or legacy SNMP.
+A button event containing `BUTTON=SCAN` starts one `scanimage` batch. For TIFF
+and PDF jobs, the SANE backend returns each page in the scanner's current job as
+a numbered TIFF, then signals when the document is complete. The daemon keeps
+those pages in scanner order, uses `tiffcp` to assemble a multi-page TIFF, and
+runs `tiff2pdf` when PDF output is configured. A one-page batch follows the same
+path without a merge. Single-page PNG and PNM jobs retain their configured
+format directly.
+
+Pages and assembled documents use partial paths until capture and conversion
+finish, then the daemon atomically gives the completed document its final name.
+Consume mode leaves that file in Paperless's consume directory. API mode sends
+it to Paperless's documented upload endpoint and deletes the staged copy only
+after a valid HTTP 200 JSON acknowledgement.
 
 ## Development
 
@@ -466,15 +537,18 @@ CI requires at least 80% coverage of the application package.
 
 - Brother DCP-L2540DW with `brscan4`
 - Proxmox LXC on Debian 12/13
-- both Docker targets on Debian Bookworm (`linux/amd64`)
+- Docker build and smoke tests for both targets on Debian Bookworm
+  (`linux/amd64`)
 - Paperless-ngx native and bind-mounted consume directories
 - Paperless API transport against an automated local HTTP endpoint
 
 ## License
 
 The daemon and repository files are MIT licensed; see [LICENSE](LICENSE).
-The Docker images also contain Brother's proprietary scanner driver under the
+The `brscan4` and `brscan5` images contain Brother's proprietary scanner driver
+under the
 [Brother Linux driver EULA](https://support.brother.com/g/s/agreement/English_lpr/agree.html).
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before building or
-redistributing an image. The images published on GHCR redistribute the same
-unmodified packages and remain subject to Brother's agreement.
+redistributing an image. The proprietary images published on GHCR redistribute
+the same unmodified Brother packages and remain subject to Brother's
+agreement.
