@@ -134,7 +134,7 @@ Config lives at `/etc/brother-scan-to-paperless/config.json`:
 | `consume_dir` | Paperless-ngx consume folder path | (required) |
 | `scanner_device` | SANE device name | `brother4:net1;dev0` |
 | `resolution` | Scan resolution in DPI | `300` |
-| `source` | Scan source (`FB` = flatbed, `ADF` = feeder) | `FB` |
+| `source` | Scan source: `FB` = flatbed, `ADF` = feeder, `auto` = feeder if it has paper, otherwise flatbed. Each feeder page is saved as its own file, so Paperless creates one document per page | `FB` |
 | `size` | Paper size | `A4` |
 | `format` | Output format (`tiff`, `png`, `pnm`) | `tiff` |
 | `register_interval` | Seconds between SNMP re-registrations | `300` |

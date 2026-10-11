@@ -13,6 +13,8 @@ Requires: brscan4 driver, sane-utils, snmp
 import argparse
 import json
 import os
+import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -34,7 +36,7 @@ DEFAULT_CONFIG = {
     "consume_dir": "",
     "scanner_device": "brother4:net1;dev0",
     "resolution": 300,
-    "source": "FB",
+    "source": "FB",  # FB, ADF, or auto (feeder if loaded, else flatbed)
     "size": "A4",
     "format": "tiff",
     "register_interval": 300,
@@ -124,56 +126,140 @@ def register_profiles(
         return False
 
 
-def do_scan(config: dict) -> bool:
-    """Run scanimage and save to the consume folder."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ext = config["format"]
-    outfile = os.path.join(config["consume_dir"], f"scan_{timestamp}.{ext}")
-    log_file = config.get("log_file")
+# scanimage exits with SANE_STATUS_NO_DOCS when the feeder is empty
+SANE_STATUS_NO_DOCS = 7
 
-    log(f"Starting scan -> {outfile}", log_file)
 
+def scan_sources(device: str) -> list[str]:
+    """Return the --source values the scanner offers (names differ per backend)."""
     try:
-        cmd = [
-            "scanimage",
-            f"--device-name={config['scanner_device']}",
-            f"--resolution={config['resolution']}",
-            f"--format={config['format']}",
-            f"--output-file={outfile}",
-        ]
-
         result = subprocess.run(
-            cmd,
+            ["scanimage", f"--device-name={device}", "-A"],
             capture_output=True,
             text=True,
-            timeout=config["scan_timeout"],
+            timeout=60,
         )
+    except Exception:
+        return []
+    m = re.search(r"--source (.+?) \[", result.stdout)
+    return m.group(1).split("|") if m else []
 
-        if (
-            result.returncode == 0
-            and os.path.exists(outfile)
-            and os.path.getsize(outfile) > 0
-        ):
-            size = os.path.getsize(outfile)
-            log(f"Scan complete: {outfile} ({size:,} bytes)", log_file)
-            return True
-        else:
-            log(
-                f"Scan failed: exit={result.returncode} stderr={result.stderr.strip()}",
-                log_file,
-            )
-            if os.path.exists(outfile):
-                os.remove(outfile)
+
+def pick_source(sources: list[str], want: str) -> str | None:
+    """Map FB/ADF to the backend's own source name, e.g. "FlatBed" or "ADF"."""
+    for s in sources:
+        name = s.lower()
+        if want == "ADF" and ("adf" in name or "feeder" in name):
+            return s
+        if want == "FB" and "flat" in name:
+            return s
+    return None
+
+
+def scanimage_cmd(config: dict, source: str | None) -> list[str]:
+    cmd = [
+        "scanimage",
+        f"--device-name={config['scanner_device']}",
+        f"--resolution={config['resolution']}",
+        f"--format={config['format']}",
+    ]
+    if source:
+        cmd.append(f"--source={source}")
+    return cmd
+
+
+def scan_feeder(config: dict, source: str, workdir: str) -> tuple[list[str], int, str]:
+    """Scan every page in the feeder into workdir. Returns (pages, exit code, stderr)."""
+    ext = config["format"]
+    cmd = scanimage_cmd(config, source) + [f"--batch={workdir}/page_%03d.{ext}"]
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=config["scan_timeout"] * 10
+    )
+    pages = sorted(
+        os.path.join(workdir, f)
+        for f in os.listdir(workdir)
+        if f.startswith("page_") and os.path.getsize(os.path.join(workdir, f)) > 0
+    )
+    return pages, result.returncode, result.stderr.strip()
+
+
+def scan_single(config: dict, source: str | None, outfile: str) -> tuple[bool, str]:
+    cmd = scanimage_cmd(config, source) + [f"--output-file={outfile}"]
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=config["scan_timeout"]
+    )
+    ok = (
+        result.returncode == 0
+        and os.path.exists(outfile)
+        and os.path.getsize(outfile) > 0
+    )
+    return ok, f"exit={result.returncode} stderr={result.stderr.strip()}"
+
+
+def do_scan(config: dict) -> bool:
+    """Scan and save to the consume folder.
+
+    With source "auto" the feeder is tried first and the flatbed is used if it
+    is empty. Every feeder page is saved as its own file, so Paperless creates
+    one document per page.
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ext = config["format"]
+    consume_dir = config["consume_dir"]
+    log_file = config.get("log_file")
+
+    # Pages are written next to the consume folder (same filesystem) and only
+    # moved in once complete, so Paperless never picks up a partial scan.
+    workdir = os.path.join(
+        os.path.dirname(os.path.abspath(consume_dir)), ".scan-staging", timestamp
+    )
+    os.makedirs(workdir, exist_ok=True)
+
+    wanted = str(config.get("source", "FB")).upper()
+    sources = scan_sources(config["scanner_device"])
+    adf = pick_source(sources, "ADF")
+    flatbed = pick_source(sources, "FB")
+
+    log(f"Starting scan {timestamp} (source: {wanted})", log_file)
+
+    try:
+        if wanted in ("AUTO", "ADF") and adf:
+            pages, code, err = scan_feeder(config, adf, workdir)
+            if pages:
+                for n, page in enumerate(pages, 1):
+                    outfile = os.path.join(consume_dir, f"scan_{timestamp}_{n:03d}.{ext}")
+                    shutil.move(page, outfile)
+                    log(
+                        f"Scan complete (feeder page {n}/{len(pages)}): "
+                        f"{outfile} ({os.path.getsize(outfile):,} bytes)",
+                        log_file,
+                    )
+                return True
+            if wanted == "ADF" or code != SANE_STATUS_NO_DOCS:
+                log(f"Feeder scan failed: exit={code} stderr={err}", log_file)
+                return False
+            log("Feeder empty, using flatbed", log_file)
+        elif wanted in ("AUTO", "ADF"):
+            log(f"No feeder source found (sources: {sources}), using flatbed", log_file)
+
+        staged = os.path.join(workdir, f"scan.{ext}")
+        ok, detail = scan_single(config, flatbed, staged)
+        if not ok:
+            log(f"Scan failed: {detail}", log_file)
             return False
+        outfile = os.path.join(consume_dir, f"scan_{timestamp}.{ext}")
+        shutil.move(staged, outfile)
+        log(f"Scan complete: {outfile} ({os.path.getsize(outfile):,} bytes)", log_file)
+        return True
 
-    except subprocess.TimeoutExpired:
-        log(f"Scan timed out after {config['scan_timeout']}s", log_file)
-        if os.path.exists(outfile):
-            os.remove(outfile)
+    except subprocess.TimeoutExpired as e:
+        log(f"Scan timed out after {e.timeout}s", log_file)
         return False
     except Exception as e:
         log(f"Scan error: {e}", log_file)
         return False
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def load_config(config_path: str | None = None) -> dict:
