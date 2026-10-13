@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "brother-scan-to-paperless.fullname" . }}
+  labels:
+    {{- include "brother-scan-to-paperless.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- if and (eq .Values.service.type "LoadBalancer") .Values.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.service.loadBalancerIP }}
+  {{- end }}
+  {{- if and (has .Values.service.type (list "LoadBalancer" "NodePort")) .Values.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy }}
+  {{- end }}
+  selector:
+    {{- include "brother-scan-to-paperless.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: scan-events
+      port: {{ .Values.scanner.listenPort }}
+      targetPort: scan-events
+      protocol: UDP

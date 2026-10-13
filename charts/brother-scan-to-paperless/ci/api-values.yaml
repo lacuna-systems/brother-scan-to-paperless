@@ -1,0 +1,20 @@
+# Mirrors a typical MetalLB + SealedSecrets deployment; used by CI to render
+# and validate the chart.
+fullnameOverride: brother-scan-to-paperless
+image:
+  backend: brscan5
+  tag: brscan5-sha-06edc8166160f006d952734b201133c19c00e5b1
+  digest: sha256:818013bc1d2c3d588d4b364505de923ef263d6ac54f0beb0ca056d5be29298bf
+scanner:
+  printerIP: 192.168.1.111
+  model: DCP-L2620DW
+paperless:
+  url: https://paperless.example.com
+  existingSecret: brother-scan-paperless
+  tags: [3, 14]
+persistence:
+  existingClaim: brother-scan-staging
+service:
+  loadBalancerIP: 192.168.5.57
+podAnnotations:
+  integration.paperless/secret-revision: "2026-07-17-2"

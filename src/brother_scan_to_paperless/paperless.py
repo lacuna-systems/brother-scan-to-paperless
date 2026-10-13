@@ -79,6 +79,17 @@ def upload_to_paperless(config: dict, document_path: str) -> bool:
             f"filename=\"{safe_filename}\"\r\n"
             f"Content-Type: {content_type}\r\n\r\n"
         ).encode("utf-8")
+        # Paperless accepts one "tags" field per tag ID; send them before the
+        # document so the streamed file remains the final part.
+        tag_fields = b"".join(
+            (
+                f"--{boundary}\r\n"
+                "Content-Disposition: form-data; name=\"tags\"\r\n\r\n"
+                f"{tag}\r\n"
+            ).encode("ascii")
+            for tag in config.get("paperless_tags", [])
+        )
+        preamble = tag_fields + preamble
         closing = f"\r\n--{boundary}--\r\n".encode("ascii")
         content_length = len(preamble) + document_stat.st_size + len(closing)
 

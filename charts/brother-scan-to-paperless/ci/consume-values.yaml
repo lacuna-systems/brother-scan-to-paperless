@@ -1,0 +1,9 @@
+deliveryMode: consume
+scanner:
+  printerIP: 192.0.2.10
+  model: DCP-L2540DW
+consume:
+  existingClaim: paperless-consume
+service:
+  type: NodePort
+  loadBalancerIP: 192.0.2.20

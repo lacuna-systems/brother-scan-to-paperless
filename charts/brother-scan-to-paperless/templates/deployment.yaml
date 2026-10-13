@@ -1,0 +1,200 @@
+{{- $apiMode := include "brother-scan-to-paperless.apiMode" . }}
+{{- $image := include "brother-scan-to-paperless.image" . }}
+{{- $tags := include "brother-scan-to-paperless.paperlessTags" . }}
+{{- if $apiMode }}
+{{- $_ := required "paperless.url is required in api mode" .Values.paperless.url }}
+{{- if not (or .Values.paperless.existingSecret .Values.paperless.apiToken) }}
+{{- fail "paperless.existingSecret or paperless.apiToken is required in api mode" }}
+{{- end }}
+{{- else }}
+{{- $_ := required "consume.existingClaim is required in consume mode" .Values.consume.existingClaim }}
+{{- if $tags }}
+{{- fail "paperless.tags requires deliveryMode api" }}
+{{- end }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "brother-scan-to-paperless.fullname" . }}
+  labels:
+    {{- include "brother-scan-to-paperless.labels" . | nindent 4 }}
+spec:
+  # The daemon owns a UDP listener and the scanner registration, so it must
+  # never run more than once.
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "brother-scan-to-paperless.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- if or .Values.podAnnotations (and $apiMode (not .Values.paperless.existingSecret)) }}
+      annotations:
+        {{- if and $apiMode (not .Values.paperless.existingSecret) }}
+        # Restart the pod when the chart-managed token changes; the token is
+        # read from its file only at startup.
+        checksum/paperless-token: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      labels:
+        {{- include "brother-scan-to-paperless.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if $apiMode }}
+      initContainers:
+        # Kubernetes volume roots default to 0755 or wider, while the daemon
+        # rejects a staging directory accessible by group or other users.
+        - name: prepare-staging
+          image: {{ $image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - chmod 0700 /staging
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: staging
+              mountPath: /staging
+      {{- end }}
+      containers:
+        - name: brother-scan-to-paperless
+          image: {{ $image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: DELIVERY_MODE
+              value: {{ .Values.deliveryMode | quote }}
+            - name: PRINTER_IP
+              value: {{ required "scanner.printerIP is required" .Values.scanner.printerIP | quote }}
+            - name: HOST_IP
+              value: {{ include "brother-scan-to-paperless.hostIP" . | quote }}
+            - name: SCANNER_MODEL
+              value: {{ required "scanner.model is required" .Values.scanner.model | quote }}
+            - name: SCANNER_NAME
+              value: {{ .Values.scanner.name | quote }}
+            {{- with .Values.scanner.device }}
+            - name: SCANNER_DEVICE
+              value: {{ . | quote }}
+            {{- end }}
+            - name: DISPLAY_NAME
+              value: {{ .Values.scanner.displayName | quote }}
+            - name: LISTEN_PORT
+              value: {{ .Values.scanner.listenPort | quote }}
+            - name: RESOLUTION
+              value: {{ .Values.scanner.resolution | quote }}
+            - name: FORMAT
+              value: {{ .Values.scanner.format | quote }}
+            - name: REGISTER_INTERVAL
+              value: {{ .Values.scanner.registerInterval | quote }}
+            - name: SCAN_TIMEOUT
+              value: {{ .Values.scanner.scanTimeout | quote }}
+            {{- if $apiMode }}
+            - name: STAGING_DIR
+              value: /staging
+            - name: PAPERLESS_URL
+              value: {{ .Values.paperless.url | quote }}
+            - name: PAPERLESS_API_TOKEN_FILE
+              value: /run/secrets/paperless/apiToken
+            - name: PAPERLESS_API_TIMEOUT
+              value: {{ .Values.paperless.apiTimeout | quote }}
+            - name: PAPERLESS_ALLOW_INSECURE_HTTP
+              value: {{ .Values.paperless.allowInsecureHttp | toString | quote }}
+            {{- if $tags }}
+            - name: PAPERLESS_TAGS
+              value: {{ $tags | quote }}
+            {{- end }}
+            {{- else }}
+            - name: CONSUME_DIR
+              value: /consume
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: scan-events
+              containerPort: {{ .Values.scanner.listenPort }}
+              protocol: UDP
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              {{- if not $apiMode }}
+              # Writes into a consume directory owned by the Paperless user.
+              add:
+                - DAC_OVERRIDE
+              {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- if $apiMode }}
+            - name: staging
+              mountPath: /staging
+            - name: paperless-token
+              mountPath: /run/secrets/paperless
+              readOnly: true
+            {{- else }}
+            - name: consume
+              mountPath: /consume
+              {{- with .Values.consume.subPath }}
+              subPath: {{ . | quote }}
+              {{- end }}
+            {{- end }}
+      volumes:
+        {{- if $apiMode }}
+        - name: staging
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "brother-scan-to-paperless.stagingClaimName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: paperless-token
+          secret:
+            secretName: {{ include "brother-scan-to-paperless.tokenSecretName" . }}
+            defaultMode: 0400
+            items:
+              - key: {{ include "brother-scan-to-paperless.tokenSecretKey" . }}
+                path: apiToken
+        {{- else }}
+        - name: consume
+          persistentVolumeClaim:
+            claimName: {{ .Values.consume.existingClaim }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

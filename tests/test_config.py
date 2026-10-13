@@ -61,6 +61,26 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["paperless_api_timeout"], 45)
         self.assertTrue(config["paperless_allow_insecure_http"])
 
+    @mock.patch.dict(os.environ, {"PAPERLESS_TAGS": " 3, 14 ,,7 "}, clear=True)
+    def test_environment_parses_paperless_tag_ids(self):
+        config = config_module.load_config("/does-not-exist")
+
+        self.assertEqual(config["paperless_tags"], [3, 14, 7])
+
+    @mock.patch.dict(os.environ, {"PAPERLESS_TAGS": ""}, clear=True)
+    def test_empty_paperless_tags_environment_value_means_no_tags(self):
+        config = config_module.load_config("/does-not-exist")
+
+        self.assertEqual(config["paperless_tags"], [])
+
+    @mock.patch.dict(os.environ, {"PAPERLESS_TAGS": "3,inbox"}, clear=True)
+    def test_invalid_paperless_tags_environment_value_is_rejected(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "PAPERLESS_TAGS must be a comma-separated list of integers",
+        ):
+            config_module.load_config("/does-not-exist")
+
     def test_token_file_overrides_environment_token_and_strips_whitespace(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             token_file = Path(temp_dir) / "paperless-token"

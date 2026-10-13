@@ -185,6 +185,12 @@ Files ending in `.partial` are interrupted or incomplete captures and must not
 be submitted. A rare local cleanup failure after API acceptance is marked with
 `.accepted`; Paperless has already queued that file, so do not resubmit it.
 
+To tag every uploaded scan, set `PAPERLESS_TAGS` to a comma-separated list of
+Paperless tag IDs, such as `PAPERLESS_TAGS=3,14`. The upload API accepts IDs,
+not names; a tag's ID is shown in the URL when editing it in Paperless, or by
+`GET /api/tags/`. Tags are only supported in API mode. In consume mode, use
+Paperless's own consumer settings or workflows instead.
+
 For deployments that inject secrets from files, set
 `PAPERLESS_API_TOKEN_FILE` to a readable file inside the container instead of
 setting `PAPERLESS_API_TOKEN`. A token file takes precedence when both are
@@ -275,6 +281,50 @@ Button-profile registration automatically uses Phoenix HTTPS when the printer
 advertises it and otherwise uses legacy SNMP. This registration and the UDP
 button-event path are independent of the selected Brother backend.
 
+## Kubernetes (Helm)
+
+A Helm chart is published to GHCR with each release:
+
+```bash
+helm install brother-scan \
+  oci://ghcr.io/zshel/charts/brother-scan-to-paperless \
+  --version X.Y.Z \
+  --namespace brother-scan --create-namespace \
+  --values my-values.yaml
+```
+
+A minimal API-mode `my-values.yaml`:
+
+```yaml
+image:
+  backend: brscan5        # or brscan4
+scanner:
+  printerIP: 192.168.1.111
+  model: DCP-L2620DW
+service:
+  loadBalancerIP: 192.168.5.57   # also used as the scanner's event address
+paperless:
+  url: https://paperless.example.com
+  existingSecret: brother-scan-paperless   # key: apiToken
+  tags: [3, 14]                            # Paperless tag IDs, optional
+```
+
+The scanner sends Scan-button events to `scanner.hostIP` (default:
+`service.loadBalancerIP`) on UDP port `54925`, so that address must be
+reachable from the printer, typically through a MetalLB `LoadBalancer`
+Service. The chart always runs a single replica with the `Recreate` strategy.
+Supply the token through `paperless.existingSecret` (for example a
+SealedSecret), or set `paperless.apiToken` to have the chart create the
+Secret. Failed uploads are kept on the staging PersistentVolumeClaim
+(`persistence.*`) for manual recovery.
+
+Consume mode is also supported with `deliveryMode: consume` and
+`consume.existingClaim` pointing at a claim shared with Paperless's consume
+directory. See
+[`charts/brother-scan-to-paperless/values.yaml`](charts/brother-scan-to-paperless/values.yaml)
+for every option. Chart versions match application releases, and the chart's
+default image tag is `<backend>-<appVersion>`.
+
 ## Native installation
 
 The original systemd installation remains available for Debian-based hosts.
@@ -363,6 +413,7 @@ override JSON values, and supported command-line flags override both.
 | `paperless_token` | `PAPERLESS_API_TOKEN` | required in API mode |
 | `paperless_api_timeout` | `PAPERLESS_API_TIMEOUT` | `60` seconds |
 | `paperless_allow_insecure_http` | `PAPERLESS_ALLOW_INSECURE_HTTP` | `false` |
+| `paperless_tags` | `PAPERLESS_TAGS` | none; tag IDs added to every API upload |
 | `scanner_device` | `SCANNER_DEVICE` | derived from the driver version |
 | `resolution` | `RESOLUTION` | `300` |
 | `format` | `FORMAT` | `tiff` |
@@ -532,6 +583,19 @@ python -m coverage report
 ```
 
 CI requires at least 80% coverage of the application package.
+
+### Releases
+
+Releases are managed by
+[release-please](https://github.com/googleapis/release-please). Commit
+messages on `main` must follow
+[Conventional Commits](https://www.conventionalcommits.org/): `fix:` produces
+a patch release, `feat:` a minor release, and `feat!:` or a
+`BREAKING CHANGE:` footer a major release. release-please keeps a release
+pull request open that bumps the application version, the Helm chart
+`version` and `appVersion`, and `CHANGELOG.md`. Merging it tags `vX.Y.Z`,
+creates the GitHub release, and dispatches the image and chart publishing
+workflows at that tag.
 
 ## Tested on
 

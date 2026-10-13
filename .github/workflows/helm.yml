@@ -1,0 +1,95 @@
+name: Helm chart
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CHART_DIR: charts/brother-scan-to-paperless
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSLo /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tar.gz" | sha256sum --check
+          tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+
+      - name: Lint and validate chart
+        run: |
+          helm version
+          for values in "$CHART_DIR"/ci/*.yaml; do
+            echo "::group::$values"
+            helm lint --strict "$CHART_DIR" --values "$values"
+            helm template ci "$CHART_DIR" --values "$values" \
+              | kubeconform -strict -summary
+            echo "::endgroup::"
+          done
+
+      - name: Check required values fail rendering
+        run: |
+          if output=$(helm template ci "$CHART_DIR" 2>&1); then
+            echo "Chart rendered without required values" >&2
+            exit 1
+          fi
+          printf '%s\n' "$output" | grep "is required"
+
+          if output=$(helm template ci "$CHART_DIR" \
+            --values "$CHART_DIR/ci/api-values.yaml" \
+            --set 'paperless.tags={inbox}' 2>&1); then
+            echo "Chart accepted a tag name instead of an ID" >&2
+            exit 1
+          fi
+          printf '%s\n' "$output" | grep "positive tag IDs"
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Check chart version matches tag
+        run: |
+          chart_version=$(helm show chart "$CHART_DIR" | sed -n 's/^version: //p')
+          if [ "v${chart_version}" != "$GITHUB_REF_NAME" ]; then
+            echo "Chart version ${chart_version} does not match ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+
+      - name: Package chart
+        run: helm package "$CHART_DIR" --destination /tmp/chart
+
+      - name: Log in to GitHub Container Registry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GH_TOKEN" | helm registry login ghcr.io \
+            --username "$GITHUB_ACTOR" --password-stdin
+
+      # Charts live under /charts so they do not share a package with the
+      # container images at ghcr.io/<owner>/brother-scan-to-paperless.
+      - name: Push chart
+        run: |
+          helm push /tmp/chart/*.tgz "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"

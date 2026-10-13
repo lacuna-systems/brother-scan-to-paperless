@@ -1,0 +1,122 @@
+# Default values for brother-scan-to-paperless.
+#
+# The daemon is a singleton: it registers one host address with the scanner,
+# listens for Scan-button events on a UDP port, and keeps scans on a
+# ReadWriteOnce volume. The chart therefore always runs exactly one replica
+# with the Recreate strategy.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/zshel/brother-scan-to-paperless
+  # Brother driver backend baked into the image: brscan4 or brscan5. Check
+  # Brother's driver page for the backend that supports your model.
+  backend: brscan5
+  # Defaults to "<backend>-<chart appVersion>", e.g. brscan5-1.2.0.
+  tag: ""
+  # Optional image digest (sha256:...) to pin the exact image.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+scanner:
+  # Scanner IP address or hostname. Required.
+  printerIP: ""
+  # Address the scanner sends Scan-button events to. Defaults to
+  # service.loadBalancerIP; set this when the address is assigned some other
+  # way (for example through a service annotation).
+  hostIP: ""
+  # Exact model name understood by brsaneconfig4/5, e.g. DCP-L2620DW. Required.
+  model: ""
+  # Internal Brother registration name.
+  name: BROTHER
+  # Profile name shown on the scanner's display.
+  displayName: Paperless
+  # SANE device; derived from the backend when empty.
+  device: ""
+  # UDP port for Scan-button events. Also used as the Service port.
+  listenPort: 54925
+  resolution: 300
+  # scanimage output format; pdf and tiff keep multi-page scans together.
+  format: pdf
+  # Seconds between scan-profile re-registrations.
+  registerInterval: 300
+  # Seconds allowed for one complete scan job.
+  scanTimeout: 600
+
+# How finished scans reach Paperless: "api" uploads through the Paperless REST
+# API; "consume" writes into a Paperless consume directory volume.
+deliveryMode: api
+
+paperless:
+  # Paperless base URL (including any reverse-proxy path, without /api).
+  # Required in api mode.
+  url: ""
+  # Paperless tag IDs added to every uploaded document, e.g. [3, 14]. The
+  # upload API takes IDs, not names; find them under GET /api/tags/. api mode
+  # only.
+  tags: []
+  apiTimeout: 60
+  # Allow plain http:// URLs. Exposes the token and documents in transit.
+  allowInsecureHttp: false
+  # Name of an existing Secret holding the API token (for example one created
+  # by SealedSecrets or External Secrets). Takes precedence over apiToken.
+  existingSecret: ""
+  existingSecretKey: apiToken
+  # API token used to create a Secret when existingSecret is empty. Prefer
+  # existingSecret so the token is not stored in Helm release values.
+  apiToken: ""
+
+consume:
+  # Existing claim mounted at /consume in consume mode, normally a
+  # ReadWriteMany volume shared with Paperless. Required in consume mode.
+  existingClaim: ""
+  subPath: ""
+
+# Staging volume for scans awaiting upload in api mode. Failed uploads are
+# kept here for manual recovery, so use persistent storage.
+persistence:
+  enabled: true
+  existingClaim: ""
+  # Empty uses the cluster's default StorageClass.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 2Gi
+  annotations: {}
+
+# The scanner must reach the daemon at scanner.hostIP on scanner.listenPort.
+service:
+  type: LoadBalancer
+  # Requested load balancer address; also the default scanner.hostIP.
+  loadBalancerIP: ""
+  # e.g. metallb.io/loadBalancerIPs: 192.168.5.57
+  annotations: {}
+  # Local keeps the scanner's source address, which the daemon uses to ignore
+  # events from other devices.
+  externalTrafficPolicy: Local
+
+podAnnotations: {}
+podLabels: {}
+
+# Extra environment variables for the daemon container.
+extraEnv: []
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 1Gi
+
+# Published images are linux/amd64 only.
+nodeSelector:
+  kubernetes.io/arch: amd64
+
+tolerations: []
+affinity: {}
+
+# Allows an in-progress scan and upload to finish on shutdown.
+terminationGracePeriodSeconds: 240

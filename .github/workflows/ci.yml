@@ -6,6 +6,9 @@ on:
     tags: ["v*.*.*"]
   pull_request:
     branches: [main]
+  # The release workflow dispatches this at each new release tag, because tags
+  # pushed with GITHUB_TOKEN do not trigger push events.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -235,14 +238,14 @@ jobs:
           trap - EXIT
 
       - name: Export tested ${{ matrix.target }} image
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         env:
           IMAGE: brother-scan-to-paperless:${{ matrix.target }}
           TARGET: ${{ matrix.target }}
         run: docker save --output "/tmp/${TARGET}.tar" "$IMAGE"
 
       - name: Store tested ${{ matrix.target }} image
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: image-${{ matrix.target }}
@@ -252,7 +255,7 @@ jobs:
           compression-level: 0
 
   publish:
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     needs: docker
     runs-on: ubuntu-latest
     permissions:

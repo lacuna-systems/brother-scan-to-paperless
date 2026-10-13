@@ -105,6 +105,48 @@ class ConfigValidationTests(unittest.TestCase):
 
             self.assertEqual(config_module.validate_config(config), [])
 
+    def test_validate_config_accepts_and_rejects_paperless_tags(self):
+        base = {
+            "driver_version": "5",
+            "delivery_mode": "api",
+            "printer_ip": "192.0.2.10",
+            "host_ip": "192.0.2.20",
+            "paperless_url": "https://paperless.example/paperless",
+            "paperless_token": "secret",
+            "paperless_api_timeout": 30,
+        }
+        cases = {
+            "valid": ([3, 7], []),
+            "zero": ([0], ["paperless_tags must be a list of positive tag IDs"]),
+            "name": (["inbox"], ["paperless_tags must be a list of positive tag IDs"]),
+            "boolean": ([True], ["paperless_tags must be a list of positive tag IDs"]),
+            "not a list": ("3", ["paperless_tags must be a list of positive tag IDs"]),
+        }
+
+        with tempfile.TemporaryDirectory() as staging_dir:
+            for name, (tags, expected) in cases.items():
+                with self.subTest(name=name):
+                    config = dict(
+                        base, staging_dir=staging_dir, paperless_tags=tags
+                    )
+                    self.assertEqual(
+                        config_module.validate_config(config), expected
+                    )
+
+    def test_validate_config_rejects_paperless_tags_in_consume_mode(self):
+        with tempfile.TemporaryDirectory() as consume_dir:
+            errors = config_module.validate_config(
+                {
+                    "driver_version": "4",
+                    "printer_ip": "192.0.2.10",
+                    "host_ip": "192.0.2.20",
+                    "consume_dir": consume_dir,
+                    "paperless_tags": [3],
+                }
+            )
+
+        self.assertEqual(errors, ["paperless_tags requires api delivery mode"])
+
     def test_validate_config_reports_api_requirements(self):
         errors = config_module.validate_config(
             {

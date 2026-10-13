@@ -123,6 +123,56 @@ class PaperlessUploadTests(unittest.TestCase):
         )
         connection.close.assert_called_once_with()
 
+    def test_upload_sends_one_tags_field_per_tag_id(self):
+        response = mock.Mock(status=200)
+        response.read.return_value = b'"OK"'
+        response.getheader.return_value = "application/json"
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        upload_uuid = SimpleNamespace(hex="0123456789abcdef")
+        config = dict(self.upload_config(), paperless_tags=[3, 14])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            document = Path(temp_dir) / "scan.pdf"
+            document.write_bytes(b"scan")
+            with (
+                mock.patch.object(
+                    paperless_module.http.client,
+                    "HTTPSConnection",
+                    return_value=connection,
+                ),
+                mock.patch.object(
+                    paperless_module.uuid,
+                    "uuid4",
+                    return_value=upload_uuid,
+                ),
+                mock.patch.object(paperless_module, "log"),
+            ):
+                success = paperless_module.upload_to_paperless(
+                    config,
+                    str(document),
+                )
+
+        self.assertTrue(success)
+        headers = {
+            call.args[0]: call.args[1] for call in connection.putheader.call_args_list
+        }
+        multipart_body = b"".join(
+            call.args[0] for call in connection.send.call_args_list
+        )
+        boundary = b"brother-scan-0123456789abcdef"
+        self.assertEqual(headers["Content-Length"], str(len(multipart_body)))
+        self.assertTrue(
+            multipart_body.startswith(
+                b"--" + boundary + b"\r\n"
+                b'Content-Disposition: form-data; name="tags"\r\n\r\n3\r\n'
+                b"--" + boundary + b"\r\n"
+                b'Content-Disposition: form-data; name="tags"\r\n\r\n14\r\n'
+                b"--" + boundary + b"\r\n"
+                b'Content-Disposition: form-data; name="document"'
+            )
+        )
+
     def test_upload_reports_http_error_and_closes_connection(self):
         response = mock.Mock(status=401)
         response.read.return_value = b'  {"detail":  "bad token api-secret"}\n'

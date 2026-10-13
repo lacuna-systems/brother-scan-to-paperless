@@ -27,6 +27,7 @@ DEFAULT_CONFIG = {
     "paperless_token": "",
     "paperless_api_timeout": 60,
     "paperless_allow_insecure_http": False,
+    "paperless_tags": [],
     "scanner_device": "",
     "resolution": 300,
     "source": "FB",
@@ -51,6 +52,7 @@ ENV_CONFIG = [
     ("PAPERLESS_API_TOKEN", "paperless_token"),
     ("PAPERLESS_API_TIMEOUT", "paperless_api_timeout"),
     ("PAPERLESS_ALLOW_INSECURE_HTTP", "paperless_allow_insecure_http"),
+    ("PAPERLESS_TAGS", "paperless_tags"),
     ("DEVICE_NAME", "scanner_device"),
     ("SCANNER_DEVICE", "scanner_device"),
     ("RESOLUTION", "resolution"),
@@ -74,6 +76,8 @@ INTEGER_CONFIG_FIELDS = {
 }
 
 BOOLEAN_CONFIG_FIELDS = {"paperless_allow_insecure_http"}
+
+INTEGER_LIST_CONFIG_FIELDS = {"paperless_tags"}
 
 
 def load_config(config_path: str | None = None) -> dict:
@@ -102,6 +106,13 @@ def load_config(config_path: str | None = None) -> dict:
             if normalized not in ("true", "false"):
                 raise ValueError(f"{env_name} must be true or false")
             value = normalized == "true"
+        elif config_name in INTEGER_LIST_CONFIG_FIELDS:
+            try:
+                value = [int(item) for item in value.split(",") if item.strip()]
+            except ValueError as exc:
+                raise ValueError(
+                    f"{env_name} must be a comma-separated list of integers"
+                ) from exc
         config[config_name] = value
 
     token_file = os.environ.get("PAPERLESS_API_TOKEN_FILE")
@@ -147,6 +158,13 @@ def validate_config(config: dict) -> list[str]:
             config["host_ip"] = detected
         else:
             errors.append("host_ip is required (auto-detection failed)")
+    paperless_tags = config.get("paperless_tags", [])
+    if type(paperless_tags) is not list or any(
+        type(tag) is not int or tag <= 0 for tag in paperless_tags
+    ):
+        errors.append("paperless_tags must be a list of positive tag IDs")
+    elif paperless_tags and delivery_mode != "api":
+        errors.append("paperless_tags requires api delivery mode")
     if delivery_mode == "api":
         paperless_url = config.get("paperless_url", "")
         parsed_url = None

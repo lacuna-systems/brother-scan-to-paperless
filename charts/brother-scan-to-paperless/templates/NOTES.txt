@@ -1,0 +1,18 @@
+brother-scan-to-paperless registers the "{{ .Values.scanner.displayName }}" profile on
+the scanner at {{ .Values.scanner.printerIP }} and listens for Scan-button events on
+{{ include "brother-scan-to-paperless.hostIP" . }}:{{ .Values.scanner.listenPort }}/UDP.
+
+{{- if include "brother-scan-to-paperless.apiMode" . }}
+
+Scans are uploaded to {{ .Values.paperless.url }}
+{{- with include "brother-scan-to-paperless.paperlessTags" . }} with tag IDs {{ . }}{{ end }}.
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence is disabled. Scans whose upload failed are kept in an
+emptyDir and are lost when the pod is replaced.
+{{- end }}
+{{- end }}
+
+Make sure the scanner can reach that address, then follow the daemon's logs:
+
+  kubectl --namespace {{ .Release.Namespace }} logs deploy/{{ include "brother-scan-to-paperless.fullname" . }} -f

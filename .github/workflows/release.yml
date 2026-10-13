@@ -1,0 +1,43 @@
+name: Release
+
+# release-please keeps a release pull request open with the next version,
+# derived from Conventional Commit messages (feat:, fix:, feat!:). Merging it
+# tags vX.Y.Z, creates the GitHub release, and bumps the application and Helm
+# chart versions together.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Update release pull request or create release
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # A tag pushed with GITHUB_TOKEN does not trigger other workflows, but a
+      # workflow_dispatch does, so publish the images and chart explicitly at
+      # the new tag.
+      - name: Publish release images and Helm chart
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          gh workflow run helm.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"

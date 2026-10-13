@@ -38,6 +38,9 @@ def run_daemon(config: dict) -> None:
     if config.get("delivery_mode") == "api":
         log(f"  Paperless:  {config['paperless_url']}", log_file)
         log(f"  Staging:    {config['staging_dir']}", log_file)
+        if config.get("paperless_tags"):
+            tags = ", ".join(str(tag) for tag in config["paperless_tags"])
+            log(f"  Tags:       {tags}", log_file)
     else:
         log(f"  Consume:    {config['consume_dir']}", log_file)
     log(f"  Device:     {config['scanner_device']}", log_file)
