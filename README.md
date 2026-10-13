@@ -586,16 +586,12 @@ CI requires at least 80% coverage of the application package.
 
 ### Releases
 
-Releases are managed by
-[release-please](https://github.com/googleapis/release-please). Commit
-messages on `main` must follow
-[Conventional Commits](https://www.conventionalcommits.org/): `fix:` produces
-a patch release, `feat:` a minor release, and `feat!:` or a
-`BREAKING CHANGE:` footer a major release. release-please keeps a release
-pull request open that bumps the application version, the Helm chart
-`version` and `appVersion`, and `CHANGELOG.md`. Merging it tags `vX.Y.Z`,
-creates the GitHub release, and dispatches the image and chart publishing
-workflows at that tag.
+Releases are cut manually: run the **Release** workflow from the Actions tab
+on `main` and choose `patch`, `minor` or `major`. The workflow bumps the
+application version and the Helm chart `version` and `appVersion` together,
+commits and tags `vX.Y.Z` on `main`, creates a GitHub release with notes
+generated from the merged pull requests and commits since the previous
+release, and then publishes the container images and Helm chart for that tag.
 
 ## Tested on
 

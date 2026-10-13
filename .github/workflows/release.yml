@@ -1,12 +1,19 @@
 name: Release
 
-# release-please keeps a release pull request open with the next version,
-# derived from Conventional Commit messages (feat:, fix:, feat!:). Merging it
-# tags vX.Y.Z, creates the GitHub release, and bumps the application and Helm
-# chart versions together.
+# Run manually from the Actions tab with the bump type. Bumps the application
+# and Helm chart versions together, commits and tags vX.Y.Z on main, creates a
+# GitHub release with generated notes, and publishes the images and chart.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version component to bump
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: read
@@ -16,28 +23,79 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-please:
+  release:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
       actions: write
+    env:
+      APP_VERSION_FILE: src/brother_scan_to_paperless/__init__.py
+      CHART_FILE: charts/brother-scan-to-paperless/Chart.yaml
     steps:
-      - name: Update release pull request or create release
-        id: release
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          fetch-depth: 0
+
+      - name: Calculate next version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          current=$(sed -n 's/^__version__ = "\([0-9]*\.[0-9]*\.[0-9]*\)"$/\1/p' "$APP_VERSION_FILE")
+          chart=$(sed -n 's/^version: //p' "$CHART_FILE")
+          app=$(sed -n 's/^appVersion: "\(.*\)"$/\1/p' "$CHART_FILE")
+          if [ -z "$current" ] || [ "$chart" != "$current" ] || [ "$app" != "$current" ]; then
+            echo "Versions disagree: app=${current} chart=${chart} appVersion=${app}" >&2
+            exit 1
+          fi
+
+          IFS=. read -r major minor patch <<< "$current"
+          case "$BUMP" in
+            major) next="$((major + 1)).0.0" ;;
+            minor) next="${major}.$((minor + 1)).0" ;;
+            patch) next="${major}.${minor}.$((patch + 1))" ;;
+            *) echo "Unknown bump type: $BUMP" >&2; exit 1 ;;
+          esac
+
+          if git rev-parse --verify --quiet "refs/tags/v${next}" >/dev/null; then
+            echo "Tag v${next} already exists" >&2
+            exit 1
+          fi
+          echo "Releasing ${current} -> ${next}"
+          echo "version=${next}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump and tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed -i "s/^__version__ = \".*\"$/__version__ = \"${VERSION}\"/" "$APP_VERSION_FILE"
+          sed -i "s/^version: .*/version: ${VERSION}/; s/^appVersion: .*/appVersion: \"${VERSION}\"/" "$CHART_FILE"
+          git diff --exit-code --quiet && { echo "Version bump changed nothing" >&2; exit 1; }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --all --message "Release v${VERSION}"
+          git tag --annotate "v${VERSION}" --message "v${VERSION}"
+          git push --atomic origin HEAD:main "v${VERSION}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes \
+            --verify-tag
 
       # A tag pushed with GITHUB_TOKEN does not trigger other workflows, but a
       # workflow_dispatch does, so publish the images and chart explicitly at
       # the new tag.
       - name: Publish release images and Helm chart
-        if: steps.release.outputs.release_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
-          gh workflow run helm.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "v${VERSION}"
+          gh workflow run helm.yml --repo "$GITHUB_REPOSITORY" --ref "v${VERSION}"
