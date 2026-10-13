@@ -756,3 +756,181 @@ class ScanTests(unittest.TestCase):
                 "Could not create secure scan batch directory: read-only",
                 None,
             )
+
+
+BRSCAN_OPTIONS = (
+    "Options specific to device `brother4:net1;dev0':\n"
+    "    --source FlatBed|Automatic Document Feeder(left aligned)"
+    "|Automatic Document Feeder(centrally aligned) [FlatBed]\n"
+)
+AIRSCAN_OPTIONS = "    --source Flatbed|ADF [Flatbed]\n"
+
+
+class ScanSourceTests(ScanTests):
+    def run_sources(self, config, options_output, captures):
+        """Run do_scan with a fake scanimage.
+
+        options_output answers the --all-options probe; each capture is a
+        (returncode, payloads) pair answering one --batch run in order.
+        """
+        captures = list(captures)
+
+        def run_scan(command, **options):
+            if "--all-options" in command:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=options_output,
+                    stderr="",
+                )
+            returncode, payloads = captures.pop(0)
+            if payloads:
+                write_batch_pages(command, options, *payloads)
+            return SimpleNamespace(returncode=returncode, stderr="no docs")
+
+        datetime_patch, uuid_patch, _ = self.scan_patches()
+        with (
+            datetime_patch,
+            uuid_patch,
+            mock.patch.object(scanner_module, "log") as log,
+            mock.patch.object(
+                scanner_module.subprocess,
+                "run",
+                side_effect=run_scan,
+            ) as run,
+        ):
+            success = scanner_module.do_scan(config)
+
+        self.assertEqual(captures, [])
+        batch_sources = [
+            next(
+                (arg for arg in call.args[0] if arg.startswith("--source=")),
+                None,
+            )
+            for call in run.call_args_list
+            if "--all-options" not in call.args[0]
+        ]
+        return success, batch_sources, log
+
+    def test_scan_sources_are_read_from_each_backend(self):
+        for output, expected in (
+            (
+                BRSCAN_OPTIONS,
+                [
+                    "FlatBed",
+                    "Automatic Document Feeder(left aligned)",
+                    "Automatic Document Feeder(centrally aligned)",
+                ],
+            ),
+            (AIRSCAN_OPTIONS, ["Flatbed", "ADF"]),
+            ("no source option\n", []),
+        ):
+            with mock.patch.object(
+                scanner_module.subprocess,
+                "run",
+                return_value=SimpleNamespace(stdout=output),
+            ):
+                self.assertEqual(
+                    scanner_module._scan_sources(scan_config("/tmp")),
+                    expected,
+                )
+
+        with mock.patch.object(
+            scanner_module.subprocess,
+            "run",
+            side_effect=OSError("missing"),
+        ):
+            self.assertEqual(
+                scanner_module._scan_sources(scan_config("/tmp")),
+                [],
+            )
+
+    def test_auto_scans_loaded_feeder_into_one_document(self):
+        with tempfile.TemporaryDirectory() as consume_dir:
+            config = scan_config(consume_dir)
+            config["source"] = "auto"
+
+            def merge_pages(config, command, output_path):
+                Path(output_path).write_bytes(b"merged")
+                return True
+
+            with mock.patch.object(
+                scanner_module,
+                "_run_document_tool",
+                side_effect=merge_pages,
+            ) as assemble:
+                success, sources, _ = self.run_sources(
+                    config,
+                    AIRSCAN_OPTIONS,
+                    [(0, [b"page 1", b"page 2"])],
+                )
+
+            self.assertTrue(success)
+            self.assertEqual(sources, ["--source=ADF"])
+            self.assertEqual(assemble.call_args.args[1][0], "tiffcp")
+            self.assertEqual(
+                expected_scan_path(consume_dir).read_bytes(),
+                b"merged",
+            )
+
+    def test_auto_falls_back_to_flatbed_when_feeder_is_empty(self):
+        with tempfile.TemporaryDirectory() as consume_dir:
+            config = scan_config(consume_dir)
+            config["source"] = "AUTO"
+
+            success, sources, log = self.run_sources(
+                config,
+                BRSCAN_OPTIONS,
+                [
+                    (scanner_module.SANE_STATUS_NO_DOCS, []),
+                    (0, [b"flatbed page"]),
+                ],
+            )
+
+            self.assertTrue(success)
+            self.assertEqual(
+                sources,
+                [
+                    "--source=Automatic Document Feeder(left aligned)",
+                    "--source=FlatBed",
+                ],
+            )
+            self.assertEqual(
+                expected_scan_path(consume_dir).read_bytes(),
+                b"flatbed page",
+            )
+            self.assertFalse(batch_directory(consume_dir).exists())
+            log.assert_any_call("Feeder empty; using flatbed", None)
+
+    def test_forced_feeder_fails_when_feeder_is_empty(self):
+        with tempfile.TemporaryDirectory() as consume_dir:
+            config = scan_config(consume_dir)
+            config["source"] = "ADF"
+
+            success, sources, log = self.run_sources(
+                config,
+                AIRSCAN_OPTIONS,
+                [(scanner_module.SANE_STATUS_NO_DOCS, [])],
+            )
+
+            self.assertFalse(success)
+            self.assertEqual(sources, ["--source=ADF"])
+            self.assertFalse(expected_scan_path(consume_dir).exists())
+            log.assert_any_call("Scan failed: exit=7 stderr=no docs", None)
+
+    def test_auto_without_feeder_uses_flatbed(self):
+        with tempfile.TemporaryDirectory() as consume_dir:
+            config = scan_config(consume_dir)
+            config["source"] = "auto"
+
+            success, sources, log = self.run_sources(
+                config,
+                "    --source Flatbed [Flatbed]\n",
+                [(0, [b"flatbed page"])],
+            )
+
+            self.assertTrue(success)
+            self.assertEqual(sources, ["--source=Flatbed"])
+            log.assert_any_call(
+                "No feeder source found (sources: ['Flatbed']); using flatbed",
+                None,
+            )
