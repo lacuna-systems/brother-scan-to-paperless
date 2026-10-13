@@ -3,8 +3,8 @@ name: brother-scan-to-paperless
 description: Brother network scanner Scan-button daemon that delivers scans to Paperless-ngx
 type: application
 # Chart and app versions move in lockstep and are bumped by the Release workflow.
-version: 1.1.0
-appVersion: "1.1.0"
+version: 1.2.0
+appVersion: "1.2.0"
 home: https://github.com/zshel/brother-scan-to-paperless
 sources:
   - https://github.com/zshel/brother-scan-to-paperless
