@@ -421,7 +421,7 @@ override JSON values, and supported command-line flags override both.
 | `scan_timeout` | `SCAN_TIMEOUT` | `120` seconds for the complete scan job |
 | `display_name` | `DISPLAY_NAME` | `Paperless` |
 | `log_file` | `LOG_FILE` | host log path; empty in Docker |
-| `source` | `SOURCE` | reserved; currently not applied |
+| `source` | `SOURCE` | `FB`; `ADF` scans the feeder, `auto` scans the feeder if it has paper and otherwise the flatbed |
 | `size` | `PAPER_SIZE` | reserved; currently not applied |
 
 `PAPERLESS_API_TOKEN_FILE` is an environment-only alternative to

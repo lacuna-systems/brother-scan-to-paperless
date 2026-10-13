@@ -1,6 +1,7 @@
 """Scan capture and delivery lifecycle."""
 
 import os
+import re
 import subprocess
 import uuid
 from datetime import datetime
@@ -10,6 +11,9 @@ from .paperless import upload_to_paperless
 
 
 MULTIPAGE_FORMATS = {"pdf", "tiff"}
+
+# scanimage exits with SANE_STATUS_NO_DOCS when the feeder is empty
+SANE_STATUS_NO_DOCS = 7
 
 
 def _document_paths(config: dict) -> tuple[str, str]:
@@ -136,13 +140,73 @@ def _handle_incomplete_batch(
     _retain_completed_batch(batch_dir, pages, log_file)
 
 
+def _scan_sources(config: dict) -> list[str]:
+    """Return the --source values the scanner offers (names differ per backend)."""
+    try:
+        result = subprocess.run(
+            [
+                "scanimage",
+                f"--device-name={config['scanner_device']}",
+                "--all-options",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=config["scan_timeout"],
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    match = re.search(r"--source (.+?) \[", result.stdout or "")
+    return match.group(1).split("|") if match else []
+
+
+def _pick_source(sources: list[str], wanted: str) -> str | None:
+    """Map FB/ADF to the backend's own name, e.g. "FlatBed" or "ADF"."""
+    for source in sources:
+        name = source.lower()
+        if wanted == "ADF" and ("adf" in name or "feeder" in name):
+            return source
+        if wanted == "FB" and "flat" in name:
+            return source
+    return None
+
+
+def _scan_plan(config: dict) -> list[str | None]:
+    """Return the --source values to try in order.
+
+    FB keeps the scanner's default source. ADF uses the feeder, and auto tries
+    the feeder first and falls back to the flatbed when the feeder is empty.
+    """
+    wanted = str(config.get("source", "FB")).strip().upper()
+    if wanted not in ("ADF", "AUTO"):
+        return [None]
+
+    sources = _scan_sources(config)
+    feeder = _pick_source(sources, "ADF")
+    flatbed = _pick_source(sources, "FB")
+    if feeder is None:
+        log(
+            f"No feeder source found (sources: {sources}); using flatbed",
+            config.get("log_file"),
+        )
+        return [flatbed]
+    if wanted == "ADF":
+        return [feeder]
+    return [feeder, flatbed]
+
+
 def _capture_pages(
     config: dict,
     batch_dir: str,
     output_format: str,
     page_limit: int | None = None,
-) -> list[str]:
-    """Capture every page exposed by one scanner-side SANE job."""
+    source: str | None = None,
+    allow_empty_feeder: bool = False,
+) -> list[str] | None:
+    """Capture every page exposed by one scanner-side SANE job.
+
+    Returns None, leaving the batch directory in place, when
+    allow_empty_feeder is set and the feeder reports no documents.
+    """
     log_file = config.get("log_file")
     page_pattern = f"page-%04d.{output_format}.partial"
     command = [
@@ -150,8 +214,10 @@ def _capture_pages(
         f"--device-name={config['scanner_device']}",
         f"--resolution={config['resolution']}",
         f"--format={output_format}",
-        f"--batch={page_pattern}",
     ]
+    if source:
+        command.append(f"--source={source}")
+    command.append(f"--batch={page_pattern}")
     if page_limit is not None:
         command.append(f"--batch-count={page_limit}")
 
@@ -173,6 +239,15 @@ def _capture_pages(
                 log_file,
             )
             return pages
+
+        if (
+            allow_empty_feeder
+            and result.returncode == SANE_STATUS_NO_DOCS
+            and not pages
+        ):
+            for artifact in artifacts:
+                _remove_file(artifact.path)
+            return None
 
         detail = " ".join((result.stderr or "").split())
         log(
@@ -369,12 +444,20 @@ def do_scan(config: dict, *, page_limit: int | None = None) -> bool:
         log(f"Could not create secure scan batch directory: {exc}", log_file)
         return False
 
-    pages = _capture_pages(
-        config,
-        batch_dir,
-        capture_format,
-        page_limit,
-    )
+    sources = _scan_plan(config)
+    for attempt, source in enumerate(sources):
+        if attempt:
+            log("Feeder empty; using flatbed", log_file)
+        pages = _capture_pages(
+            config,
+            batch_dir,
+            capture_format,
+            page_limit,
+            source,
+            allow_empty_feeder=attempt + 1 < len(sources),
+        )
+        if pages is not None:
+            break
     if not pages:
         return False
 
